@@ -81,9 +81,12 @@ pub fn open_boss_window(app: AppHandle, url: Option<String>) -> Result<(), Strin
     }
     let target = url.unwrap_or_else(|| "https://www.zhipin.com/web/geek/jobs".to_string());
     let parsed: tauri::Url = target.parse().map_err(|e| format!("invalid url: {e}"))?;
+    // 使用真实桌面 Chrome UA，避免 BOSS 风控对 WebView2 默认 UA 返回白屏/验证页
+    const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
     WebviewWindowBuilder::new(&app, "boss", WebviewUrl::External(parsed))
         .title("BOSS直聘 - 登录")
         .inner_size(1200.0, 820.0)
+        .user_agent(CHROME_UA)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())

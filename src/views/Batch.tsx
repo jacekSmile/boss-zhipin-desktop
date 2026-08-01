@@ -7,6 +7,7 @@ import {
   appendHistory,
   batchRunning,
   cancelBatch,
+  hideBrowser,
   loadHistory,
   onBatchProgress,
   openBossWindow,
@@ -351,7 +352,7 @@ export default function Batch() {
         <Modal title="检测到风控 / 人机验证" onClose={() => setRiskOpen(false)}>
           <div className="risk-modal-text">
             BOSS 触发了人机验证或访问风控（如滑块、安全校验、登录失效），程序无法自动处理。
-            请在 BOSS 窗口中手动完成验证或重新登录，然后再继续投递。
+            请显示内置浏览器窗口，在其中手动完成验证或重新登录，然后再继续投递。
           </div>
           <div className="risk-modal-text risk-modal-sub">
             建议：处理后等待 1-2 分钟再恢复；适当增大投递间隔可降低再次触发的概率。
@@ -363,10 +364,23 @@ export default function Batch() {
             <button
               className="btn btn-ghost"
               onClick={() => {
-                void openBossWindow().catch((e) => toast(`打开窗口失败：${String(e)}`, "error"));
+                void hideBrowser()
+                  .then(() => {
+                    setRiskOpen(false);
+                    toast("浏览器窗口已隐藏（后台保持运行）", "info");
+                  })
+                  .catch((e) => toast(`隐藏窗口失败：${String(e)}`, "error"));
               }}
             >
-              打开 BOSS 窗口手动处理
+              处理完成，隐藏窗口
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                void openBossWindow().catch((e) => toast(`显示窗口失败：${String(e)}`, "error"));
+              }}
+            >
+              显示浏览器窗口手动处理
             </button>
             <button
               className="btn btn-primary"

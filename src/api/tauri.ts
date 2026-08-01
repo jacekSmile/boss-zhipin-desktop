@@ -16,6 +16,21 @@ export function closeBossWindow(): Promise<void> {
   return invoke("close_boss_window");
 }
 
+/** 获取 BOSS 登录二维码（后端导航隐藏浏览器到登录页抓取，最多等 ~25s） */
+export function getLoginQr(): Promise<string> {
+  return invoke("get_login_qr");
+}
+
+/** 把离屏浏览器窗口移回屏幕（人工处理验证码等场景） */
+export function showBrowser(): Promise<void> {
+  return invoke("show_browser");
+}
+
+/** 把浏览器窗口移出屏幕（恢复离屏隐藏运行） */
+export function hideBrowser(): Promise<void> {
+  return invoke("hide_browser");
+}
+
 export function bossWindowOpen(): Promise<boolean> {
   return invoke("boss_window_open");
 }

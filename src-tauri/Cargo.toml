@@ -1,6 +1,6 @@
 [package]
 name = "boss-zhipin-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "BOSS直聘求职助手 - 跨平台桌面端"
 edition = "2021"
 rust-version = "1.77"

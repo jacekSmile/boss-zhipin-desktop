@@ -23,7 +23,7 @@ impl BossState {
 /// Classify errors that mean BOSS risk-control or lost login. These must
 /// never be retried blindly — the batch aborts instead.
 fn is_restricted_error(msg: &str) -> bool {
-    const KEYS: [&str; 15] = [
+    const KEYS: [&str; 19] = [
         "code 31",
         "code 37",
         "code: 31",
@@ -39,6 +39,10 @@ fn is_restricted_error(msg: &str) -> bool {
         "环境异常",
         "登录查看完整内容",
         "未登录",
+        "访问受限",
+        "IP 存在异常",
+        "违规访问",
+        "暂时无法访问",
     ];
     KEYS.iter().any(|k| msg.contains(k))
 }
@@ -49,7 +53,28 @@ pub async fn open_boss_window(
     cdp: tauri::State<'_, CdpState>,
     url: Option<String>,
 ) -> Result<(), String> {
-    cdp::open(&app, &cdp, url).await
+    // 打开并把窗口移回屏幕（供人工操作场景）
+    cdp::open(&app, &cdp, url).await?;
+    let _ = cdp::show_window(&cdp).await;
+    Ok(())
+}
+
+/// 获取 BOSS 登录二维码（data URL），浏览器保持隐藏
+#[tauri::command]
+pub async fn get_login_qr(app: AppHandle, cdp: tauri::State<'_, CdpState>) -> Result<String, String> {
+    cdp::get_login_qr(&app, &cdp).await
+}
+
+/// 把隐藏的浏览器窗口移回屏幕
+#[tauri::command]
+pub async fn show_browser(cdp: tauri::State<'_, CdpState>) -> Result<(), String> {
+    cdp::show_window(&cdp).await
+}
+
+/// 把浏览器窗口移出屏幕隐藏
+#[tauri::command]
+pub async fn hide_browser(cdp: tauri::State<'_, CdpState>) -> Result<(), String> {
+    cdp::hide_window(&cdp).await
 }
 
 #[tauri::command]

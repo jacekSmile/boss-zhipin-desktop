@@ -65,7 +65,7 @@ function interpretSearch(json: SearchResponse): Job[] {
 
 async function ensureWindow(): Promise<void> {
   if (!(await bossWindowOpen())) {
-    throw new BossError("no-window", "BOSS 窗口未打开，请先点击顶栏「打开登录窗口」");
+    throw new BossError("no-window", "内置浏览器未启动，请先点击顶栏「扫码登录」");
   }
 }
 

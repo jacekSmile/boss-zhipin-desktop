@@ -225,18 +225,18 @@ export default function Search() {
       {error && (
         <div className={`alert ${error.kind === "risk" ? "alert-warning" : "alert-error"}`}>
           <div>{error.msg}</div>
-          {error.kind === "login" && <div className="alert-hint">提示：点击顶栏「打开登录窗口」，扫码登录后再搜索。</div>}
+          {error.kind === "login" && <div className="alert-hint">提示：点击顶栏「扫码登录」，使用 BOSS直聘 App 扫码后再搜索。</div>}
           {error.kind === "risk" && (
             <>
               <div className="alert-hint">
-                BOSS 触发了人机验证/风控，程序无法自动处理。请到 BOSS 窗口手动完成滑块/安全验证，等待 5-10 分钟后再操作；适当增大批量间隔、避免频繁翻页。
+                BOSS 触发了人机验证/风控，程序无法自动处理。请显示内置浏览器窗口，手动完成滑块/安全验证，等待 5-10 分钟后再操作；适当增大批量间隔、避免频繁翻页。
               </div>
               <div className="alert-hint">
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => void openBossWindow().catch((e) => toast(`打开窗口失败：${String(e)}`, "error"))}
+                  onClick={() => void openBossWindow().catch((e) => toast(`显示窗口失败：${String(e)}`, "error"))}
                 >
-                  打开 BOSS 窗口手动处理
+                  显示浏览器窗口手动处理
                 </button>
               </div>
             </>

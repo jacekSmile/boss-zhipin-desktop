@@ -178,6 +178,11 @@ async fn ensure_browser(app: &AppHandle, st: &Arc<Shared>, url: &str) -> Result<
         "--disable-blink-features=AutomationControlled".to_string(),
         "--disable-features=TranslateUI".to_string(),
         "--lang=zh-CN".to_string(),
+        // 默认离屏隐藏运行（仍是有头模式，指纹与正常用户一致）；
+        // 需要人工操作时由程序把窗口移回屏幕
+        "--window-position=-32000,-32000".to_string(),
+        "--window-size=1280,860".to_string(),
+        // 必须有 --new-window，否则 URL 参数不生效（只开空白页）
         "--new-window".to_string(),
         url.to_string(),
     ];
@@ -453,4 +458,163 @@ pub async fn is_open(_state: &CdpState) -> bool {
 /// 应用退出时清理浏览器进程。
 pub fn shutdown(state: &CdpState) {
     close(state);
+}
+
+const LOGIN_URL: &str = "https://www.zhipin.com/web/user/?ka=header-login";
+
+/// 把离屏隐藏的浏览器窗口移回屏幕（供人工处理验证码/登录等场景）。
+pub async fn show_window(state: &CdpState) -> Result<(), String> {
+    let st = &state.shared;
+    let sid = ensure_session(st).await?;
+    let win = send_command(st, Some(&sid), "Browser.getWindowForTarget", json!({})).await?;
+    let wid = win
+        .get("windowId")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "获取窗口句柄失败".to_string())?;
+    send_command(
+        st,
+        None,
+        "Browser.setWindowBounds",
+        json!({ "windowId": wid, "bounds": { "windowState": "normal", "left": 80, "top": 60, "width": 1280, "height": 860 } }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 把浏览器窗口重新移出屏幕隐藏。
+pub async fn hide_window(state: &CdpState) -> Result<(), String> {
+    let st = &state.shared;
+    let sid = ensure_session(st).await?;
+    let win = send_command(st, Some(&sid), "Browser.getWindowForTarget", json!({})).await?;
+    let wid = win
+        .get("windowId")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "获取窗口句柄失败".to_string())?;
+    send_command(
+        st,
+        None,
+        "Browser.setWindowBounds",
+        json!({ "windowId": wid, "bounds": { "windowState": "normal", "left": -32000, "top": -32000, "width": 1280, "height": 860 } }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 获取 BOSS 登录二维码（data URL），供应用内展示扫码。
+/// 浏览器保持离屏隐藏，用户无需看到浏览器窗口。
+pub async fn get_login_qr(app: &AppHandle, state: &CdpState) -> Result<String, String> {
+    let st = &state.shared;
+    ensure_browser(app, st, LOGIN_URL).await?;
+    let sid = ensure_session(st).await?;
+
+    // 若当前不在登录相关页面，导航过去
+    let cur = send_command(
+        st,
+        Some(&sid),
+        "Runtime.evaluate",
+        json!({ "expression": "location.href", "returnByValue": true }),
+    )
+    .await?;
+    let href = cur
+        .pointer("/result/value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !href.contains("/web/user") && !href.contains("login") {
+        let _ = send_command(st, Some(&sid), "Page.navigate", json!({ "url": LOGIN_URL })).await;
+    }
+
+    // 轮询等待二维码出现（页面渲染 + 风控页刷新都需要时间）
+    const PROBE: &str = r#"
+// 1) 若存在「APP扫码登录」切换入口（默认停在验证码登录），先点击
+const tip = Array.from(document.querySelectorAll('*')).find(e => e.children.length === 0 && /APP扫码登录|扫码登录/.test((e.textContent || '').trim()));
+if (tip) { ['pointerdown','mousedown','mouseup','pointerup','click'].forEach(t => tip.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }))); }
+await new Promise(r => setTimeout(r, 1200));
+// 2) 优先二维码容器内的 img（BOSS 登录页结构 .qr-code-box/.qr-img-box）
+const inBox = document.querySelector('.qr-code-box img, .qr-img-box img, [class*="qrcode"] img, [class*="qr-code"] img');
+if (inBox && (inBox.currentSrc || inBox.src)) return { kind: 'img', src: inBox.currentSrc || inBox.src };
+// 3) 可见的 blob: 图片，取最大（排除 APP 下载码等隐藏元素）
+const blobs = Array.from(document.querySelectorAll('img')).filter(i => (i.currentSrc || i.src || '').startsWith('blob:') && i.naturalWidth > 80 && i.offsetParent);
+if (blobs.length) { blobs.sort((a, b) => b.naturalWidth - a.naturalWidth); return { kind: 'img', src: blobs[0].currentSrc || blobs[0].src }; }
+// 4) http(s) 且带 qr 字样的 img
+const httpQr = Array.from(document.querySelectorAll('img')).find(i => /^https?:/.test(i.currentSrc || i.src || '') && /qr|code/i.test(i.currentSrc || i.src || '') && i.naturalWidth > 80);
+if (httpQr) return { kind: 'img', src: httpQr.currentSrc || httpQr.src };
+// 5) canvas 兜底
+const canvas = Array.from(document.querySelectorAll('canvas')).find(c => c.width > 80 && c.height > 80);
+if (canvas) { try { return { kind: 'canvas', dataUrl: canvas.toDataURL('image/png') }; } catch (e) {} }
+return null;
+"#;
+    for _ in 0..30 {
+        let r = send_command(
+            st,
+            Some(&sid),
+            "Runtime.evaluate",
+            json!({
+                "expression": format!("(async () => {{ {PROBE} }})()"),
+                "awaitPromise": true,
+                "returnByValue": true
+            }),
+        )
+        .await?;
+        let v = r.pointer("/result/value").cloned().unwrap_or(Value::Null);
+        if !v.is_null() {
+            let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+            if kind == "canvas" {
+                if let Some(d) = v.get("dataUrl").and_then(|x| x.as_str()) {
+                    return Ok(d.to_string());
+                }
+            } else {
+                let src = v.get("src").and_then(|x| x.as_str()).unwrap_or("");
+                if src.starts_with("data:") {
+                    return Ok(src.to_string());
+                }
+                if src.starts_with("http") || src.starts_with("blob:") {
+                    // 优先在页面上下文内取图（blob: 只能页面内取；http 带 cookie/referer）
+                    let js = format!(
+                        r#"const r = await fetch({src:?}, {{ credentials: 'include' }});
+if (!r.ok) throw new Error('img http ' + r.status);
+const buf = await r.arrayBuffer();
+const u = new Uint8Array(buf);
+let s = '';
+for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, Array.from(u.subarray(i, i + 8192)));
+return btoa(s);"#,
+                        src = json!(src)
+                    );
+                    if let Ok(b64_res) = send_command(
+                        st,
+                        Some(&sid),
+                        "Runtime.evaluate",
+                        json!({
+                            "expression": format!("(async () => {{ {js} }})()"),
+                            "awaitPromise": true,
+                            "returnByValue": true
+                        }),
+                    )
+                    .await
+                    {
+                        if let Some(b64) = b64_res.pointer("/result/value").and_then(|x| x.as_str()) {
+                            return Ok(format!("data:image/png;base64,{b64}"));
+                        }
+                    }
+                    // Rust 侧兜底（仅 http(s) 可外部下载）
+                    if src.starts_with("http") {
+                        use base64::Engine;
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(10))
+                            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
+                            .build()
+                            .map_err(|e| e.to_string())?;
+                        if let Ok(resp) = client.get(src).send().await {
+                            if let Ok(bytes) = resp.bytes().await {
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                                return Ok(format!("data:image/png;base64,{b64}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    }
+    Err("等待二维码加载超时，请点击刷新重试".to_string())
 }

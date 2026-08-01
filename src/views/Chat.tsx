@@ -126,7 +126,7 @@ export default function Chat() {
           </div>
           {!bossOpen && (
             <div className="alert alert-warning inline-alert">
-              BOSS 窗口未打开，请先在顶栏点击「打开登录窗口」并扫码登录。
+              内置浏览器未启动或未登录，请先在顶栏点击「扫码登录」。
             </div>
           )}
           {prepareError && <div className="alert alert-error inline-alert">{prepareError}</div>}

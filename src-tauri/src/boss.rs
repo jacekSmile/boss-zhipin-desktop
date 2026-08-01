@@ -1,13 +1,12 @@
+use crate::cdp::{self, CdpState};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
-use tokio::sync::{oneshot, watch};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::watch;
 
 /// State shared across commands.
 pub struct BossState {
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     batch_cancel: Arc<Mutex<Option<watch::Sender<bool>>>>,
     batch_running_flag: Arc<Mutex<bool>>,
 }
@@ -15,38 +14,10 @@ pub struct BossState {
 impl BossState {
     pub fn new() -> Self {
         Self {
-            pending: Arc::new(Mutex::new(HashMap::new())),
             batch_cancel: Arc::new(Mutex::new(None)),
             batch_running_flag: Arc::new(Mutex::new(false)),
         }
     }
-}
-
-/// Listen once for `boss-api-result` events emitted by JS injected into the
-/// BOSS webview, and resolve the matching pending oneshot by request id.
-pub fn setup_result_listener(app: AppHandle) {
-    let state = app.state::<BossState>();
-    let pending = state.pending.clone();
-    app.listen_any("boss-api-result", move |event| {
-        let payload: Value = match serde_json::from_str(event.payload()) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
-            let tx = {
-                let mut map = pending.lock().unwrap();
-                map.remove(id)
-            };
-            if let Some(tx) = tx {
-                let _ = tx.send(payload);
-            }
-        }
-    });
-}
-
-fn get_boss_webview(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
-    app.get_webview_window("boss")
-        .ok_or_else(|| "BOSS 登录窗口未打开，请先登录".to_string())
 }
 
 /// Classify errors that mean BOSS risk-control or lost login. These must
@@ -73,92 +44,35 @@ fn is_restricted_error(msg: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn open_boss_window(app: AppHandle, url: Option<String>) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("boss") {
-        w.show().map_err(|e| e.to_string())?;
-        w.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    let target = url.unwrap_or_else(|| "https://www.zhipin.com/web/geek/jobs".to_string());
-    let parsed: tauri::Url = target.parse().map_err(|e| format!("invalid url: {e}"))?;
-    // 使用真实桌面 Chrome UA，避免 BOSS 风控对 WebView2 默认 UA 返回白屏/验证页
-    const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-    WebviewWindowBuilder::new(&app, "boss", WebviewUrl::External(parsed))
-        .title("BOSS直聘 - 登录")
-        .inner_size(1200.0, 820.0)
-        .user_agent(CHROME_UA)
-        .build()
-        .map_err(|e| e.to_string())?;
+pub async fn open_boss_window(
+    app: AppHandle,
+    cdp: tauri::State<'_, CdpState>,
+    url: Option<String>,
+) -> Result<(), String> {
+    cdp::open(&app, &cdp, url).await
+}
+
+#[tauri::command]
+pub fn close_boss_window(cdp: tauri::State<'_, CdpState>) -> Result<(), String> {
+    cdp::close(&cdp);
     Ok(())
 }
 
 #[tauri::command]
-pub fn close_boss_window(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("boss") {
-        w.close().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+pub async fn boss_window_open(cdp: tauri::State<'_, CdpState>) -> Result<bool, String> {
+    Ok(cdp::is_open(&cdp).await)
 }
 
-#[tauri::command]
-pub fn boss_window_open(app: AppHandle) -> bool {
-    app.get_webview_window("boss").is_some()
-}
-
-/// Evaluate a JS expression inside the logged-in BOSS webview and await its
-/// result. `script` must be a JS expression evaluating to a value or a
-/// Promise. The result is returned via the `boss-api-result` event bridge.
+/// Evaluate a JS expression inside the BOSS tab of the built-in browser and
+/// await its result. `script` must be a JS function body ending with `return`.
 #[tauri::command]
 pub async fn boss_eval(
     app: AppHandle,
-    state: tauri::State<'_, BossState>,
+    cdp: tauri::State<'_, CdpState>,
     script: String,
     timeout_ms: Option<u64>,
 ) -> Result<Value, String> {
-    let webview = get_boss_webview(&app)?;
-    let id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = oneshot::channel::<Value>();
-    {
-        let mut map = state.pending.lock().unwrap();
-        map.insert(id.clone(), tx);
-    }
-
-    // Wrap user script: it may use `await` since we place it in an async IIFE.
-    let wrapped = format!(
-        r#"(async () => {{
-  try {{
-    const __result = await (async () => {{ {script} }})();
-    window.__TAURI__.event.emit('boss-api-result', {{ id: {id:?}, ok: true, data: __result === undefined ? null : __result }});
-  }} catch (e) {{
-    window.__TAURI__.event.emit('boss-api-result', {{ id: {id:?}, ok: false, error: String((e && (e.message || e.error)) || e) }});
-  }}
-}})();"#,
-        script = script,
-        id = json!(id)
-    );
-
-    webview.eval(&wrapped).map_err(|e| {
-        let mut map = state.pending.lock().unwrap();
-        map.remove(&id);
-        format!("eval 失败: {e}")
-    })?;
-
-    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(60_000));
-    match tokio::time::timeout(timeout, rx).await {
-        Ok(Ok(payload)) => {
-            if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                Ok(payload.get("data").cloned().unwrap_or(Value::Null))
-            } else {
-                Err(payload
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("未知错误")
-                    .to_string())
-            }
-        }
-        Ok(Err(_)) => Err("结果通道被关闭".to_string()),
-        Err(_) => Err("执行超时，请确认 BOSS 窗口已打开且已登录".to_string()),
-    }
+    cdp::eval(&app, &cdp, &script, timeout_ms).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +98,7 @@ pub struct BatchProgress {
 pub async fn start_batch(
     app: AppHandle,
     state: tauri::State<'_, BossState>,
+    cdp_state: tauri::State<'_, CdpState>,
     items: Vec<BatchItem>,
     min_delay_ms: u64,
     max_delay_ms: u64,
@@ -200,7 +115,9 @@ pub async fn start_batch(
     if items.len() > 300 {
         return Err("单次批量任务过多（上限 300 条），请分批执行以保护账号".to_string());
     }
-    let webview = get_boss_webview(&app)?;
+    if !cdp::is_open(&cdp_state).await {
+        return Err("内置浏览器未启动，请先打开登录窗口并登录".to_string());
+    }
     {
         let mut running = state.batch_running_flag.lock().unwrap();
         *running = true;
@@ -211,9 +128,9 @@ pub async fn start_batch(
         *slot = Some(cancel_tx);
     }
 
-    let pending = state.pending.clone();
     let batch_cancel = state.batch_cancel.clone();
     let running_flag = state.batch_running_flag.clone();
+    let cdp = cdp_state.inner().clone();
     let total = items.len();
     // Floor of 1s between items regardless of user input — account safety.
     let min_d = min_delay_ms.min(max_delay_ms).max(1_000);
@@ -229,57 +146,14 @@ pub async fn start_batch(
             if *cancel_rx.borrow() {
                 break;
             }
-            // Execute one item via the eval bridge, retrying transient
-            // failures with randomized backoff. Risk-control errors abort the
-            // whole batch immediately.
+            // Execute one item via CDP, retrying transient failures with
+            // randomized backoff. Risk-control errors abort the whole batch.
             const MAX_RETRY: u32 = 2;
             let mut attempt: u32 = 0;
             let (ok, error, result) = loop {
-                let id = uuid::Uuid::new_v4().to_string();
-                let (tx, rx) = oneshot::channel::<Value>();
-                {
-                    let mut map = pending.lock().unwrap();
-                    map.insert(id.clone(), tx);
-                }
-                let wrapped = format!(
-                    r#"(async () => {{
-  try {{
-    const __result = await (async () => {{ {script} }})();
-    window.__TAURI__.event.emit('boss-api-result', {{ id: {id:?}, ok: true, data: __result === undefined ? null : __result }});
-  }} catch (e) {{
-    window.__TAURI__.event.emit('boss-api-result', {{ id: {id:?}, ok: false, error: String((e && (e.message || e.error)) || e) }});
-  }}
-}})();"#,
-                    script = item.script,
-                    id = json!(id)
-                );
-                let outcome = if let Err(e) = webview.eval(&wrapped) {
-                    let mut map = pending.lock().unwrap();
-                    map.remove(&id);
-                    (false, Some(format!("eval 失败: {e}")), None)
-                } else {
-                    let timeout = std::time::Duration::from_millis(60_000);
-                    match tokio::time::timeout(timeout, rx).await {
-                        Ok(Ok(payload)) => {
-                            if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                (true, None, payload.get("data").cloned())
-                            } else {
-                                (
-                                    false,
-                                    Some(
-                                        payload
-                                            .get("error")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("未知错误")
-                                            .to_string(),
-                                    ),
-                                    None,
-                                )
-                            }
-                        }
-                        Ok(Err(_)) => (false, Some("结果通道被关闭".to_string()), None),
-                        Err(_) => (false, Some("执行超时".to_string()), None),
-                    }
+                let outcome = match cdp::eval(&app, &cdp, &item.script, Some(60_000)).await {
+                    Ok(v) => (true, None, Some(v)),
+                    Err(e) => (false, Some(e), None),
                 };
 
                 if outcome.0 {
@@ -289,7 +163,7 @@ pub async fn start_batch(
                 // Risk-control / login-wall: do not retry, abort the batch.
                 if is_restricted_error(&err_msg) {
                     abort_reason = Some(format!(
-                        "检测到 BOSS 风控/登录限制（{}），为保护账号已中止批量任务。请在 BOSS 窗口完成验证或稍作等待后重试。",
+                        "检测到 BOSS 风控/登录限制（{}），为保护账号已中止批量任务。请在浏览器窗口完成验证或稍作等待后重试。",
                         err_msg
                     ));
                     emit_progress(BatchProgress {

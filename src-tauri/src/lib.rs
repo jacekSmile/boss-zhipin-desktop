@@ -1,9 +1,10 @@
 mod boss;
+mod cdp;
 mod storage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(boss::BossState::new())
         .invoke_handler(tauri::generate_handler![
@@ -23,9 +24,18 @@ pub fn run() {
             storage::clear_history,
         ])
         .setup(|app| {
-            boss::setup_result_listener(app.handle().clone());
+            use tauri::Manager;
+            app.manage(cdp::CdpState::new(app.handle()));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            use tauri::Manager;
+            let state = handle.state::<cdp::CdpState>();
+            cdp::shutdown(&state);
+        }
+    });
 }

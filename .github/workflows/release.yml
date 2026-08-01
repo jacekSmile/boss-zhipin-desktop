@@ -22,14 +22,19 @@ jobs:
         include:
           - platform: windows-latest
             args: "--bundles nsis"
+            cft: win64
           - platform: ubuntu-22.04
             args: ""
+            cft: linux64
           - platform: ubuntu-24.04-arm
             args: ""
+            cft: ""
           - platform: macos-13
             args: "--target x86_64-apple-darwin"
+            cft: mac-x64
           - platform: macos-14
             args: "--target aarch64-apple-darwin"
+            cft: mac-arm64
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -39,6 +44,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Download Chrome for Testing (bundled browser)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p vendor/browser
+          if [ -z "${{ matrix.cft }}" ]; then
+            echo "No Chrome for Testing build for this platform; skipping bundled browser (runtime falls back to system browser)."
+            exit 0
+          fi
+          cd vendor/browser
+          curl -sL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json -o cft.json
+          URL=$(node -e "const j=require('./cft.json');console.log(j.channels.Stable.downloads.chrome.find(d=>d.platform==='${{ matrix.cft }}').url)")
+          echo "Downloading $URL"
+          curl -sL -o cft.zip "$URL"
+          tar -xf cft.zip
+          rm cft.zip cft.json
+          ls
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

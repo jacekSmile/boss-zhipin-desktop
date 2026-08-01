@@ -38,7 +38,7 @@ Release 中的 macOS 应用**未经过 Apple 开发者签名与公证**（需要
 **方式一（推荐，命令行）**：
 
 ```bash
-# 把 app 拖入「应用程序」后执行：
+# 把 app 拖入「应用程序」后执行（应用名以实际为准，可用 ls /Applications 查看）：
 xattr -dr com.apple.quarantine /Applications/BOSS直聘求职助手.app
 ```
 
@@ -47,6 +47,8 @@ xattr -dr com.apple.quarantine /Applications/BOSS直聘求职助手.app
 1. 打开「系统设置 → 隐私与安全性」
 2. 先尝试双击打开 app（会被拦截）
 3. 回到「隐私与安全性」页面底部，点击「仍要打开」
+
+**方式三（临时）**：按住 Control 键点击 app 图标 →「打开」→ 在弹窗中再点「打开」。
 
 > 如果你愿意自行签名，可 clone 本仓库后配置 `APPLE_CERTIFICATE` 等 secrets 重新构建。
 

@@ -1,0 +1,23 @@
+[package]
+name = "boss-zhipin-desktop"
+version = "0.1.0"
+description = "BOSS直聘求职助手 - 跨平台桌面端"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "boss_zhipin_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time", "sync", "macros"] }
+rand = "0.9"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"

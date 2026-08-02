@@ -59,7 +59,11 @@ jobs:
           URL=$(node -e "const j=require('./cft.json');console.log(j.channels.Stable.downloads.chrome.find(d=>d.platform==='${{ matrix.cft }}').url)")
           echo "Downloading $URL"
           curl -sL -o cft.zip "$URL"
-          tar -xf cft.zip
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z x cft.zip -y >/dev/null
+          else
+            unzip -q -o cft.zip
+          fi
           rm cft.zip cft.json
           ls
 
